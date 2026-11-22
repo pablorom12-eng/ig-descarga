@@ -23,13 +23,22 @@
     }
   }
   var reCont = /^(continuar en el sitio web|continue on web|continue to web|continuar en la web)/i;
+  var reCookie = /^(rechazar cookies opcionales|decline optional cookies)/i;
   var clicked = false;
+  var cookieClicked = false;
   function extras() {
     if (!clicked) {
       var cs = document.querySelectorAll('a,button,div[role="button"],span');
       for (var i = 0; i < cs.length; i++) {
         var t = (cs[i].innerText || '').trim();
         if (t.length < 40 && reCont.test(t)) { clicked = true; cs[i].click(); break; }
+      }
+    }
+    if (!cookieClicked) {
+      var bs = document.querySelectorAll('button,div[role="button"]');
+      for (var k = 0; k < bs.length; k++) {
+        var tt = (bs[k].innerText || '').trim();
+        if (tt.length < 40 && reCookie.test(tt)) { cookieClicked = true; bs[k].click(); break; }
       }
     }
     var vs = document.querySelectorAll('video');
