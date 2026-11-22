@@ -487,6 +487,8 @@ public class MainActivity extends Activity {
                 File best = null;
                 File vOnly = null;
                 File aOnly = null;
+                List<File> vList = new ArrayList<>();
+                List<File> aList = new ArrayList<>();
                 int n = 0;
                 for (String u : list) {
                     File f = new File(getCacheDir(), "c" + (n++) + ".mp4");
@@ -500,22 +502,40 @@ public class MainActivity extends Activity {
                     if (a && v) {
                         if (best == null || f.length() > best.length()) best = f;
                     } else if (v) {
+                        vList.add(f);
                         if (vOnly == null || f.length() > vOnly.length()) vOnly = f;
                     } else if (a) {
+                        aList.add(f);
                         if (aOnly == null || f.length() > aOnly.length()) aOnly = f;
                     }
                 }
                 String note = "";
-                if (best == null && vOnly != null && aOnly != null) {
-                    try {
-                        ui("Uniendo v\u00EDdeo y audio\u2026");
-                        File mf = new File(getCacheDir(), "m.mp4");
-                        mux(vOnly, aOnly, mf);
-                        best = mf;
-                    } catch (Throwable e) {
-                        note = " (no se pudo unir: " + e.getClass().getSimpleName()
-                                + ": " + e.getMessage() + ")";
+                if (best == null && !vList.isEmpty() && !aList.isEmpty()) {
+                    ui("Uniendo v\u00EDdeo y audio\u2026");
+                    vList.sort((x, y) -> {
+                        int sx = "video/avc".equals(trackMime(x, "video/")) ? 1 : 0;
+                        int sy = "video/avc".equals(trackMime(y, "video/")) ? 1 : 0;
+                        if (sx != sy) return sy - sx;
+                        return Long.compare(y.length(), x.length());
+                    });
+                    aList.sort((x, y) -> Long.compare(y.length(), x.length()));
+                    int attempt = 0;
+                    for (File vf : vList) {
+                        if (best != null) break;
+                        for (File af : aList) {
+                            if (best != null) break;
+                            try {
+                                File mf = new File(getCacheDir(), "m" + (attempt++) + ".mp4");
+                                mux(vf, af, mf);
+                                best = mf;
+                            } catch (Throwable e) {
+                                note = " (no se pudo unir: " + e.getMessage()
+                                        + "; v\u00EDdeo " + trackMime(vf, "video/")
+                                        + ", audio " + trackMime(af, "audio/") + ")";
+                            }
+                        }
                     }
+                    if (best != null) note = "";
                 }
                 if (best == null) {
                     ui("Probando otro m\u00E9todo\u2026");
@@ -716,6 +736,19 @@ public class MainActivity extends Activity {
             return selectTrack(ex, "audio/") >= 0;
         } catch (Exception e) {
             return false;
+        } finally {
+            ex.release();
+        }
+    }
+
+    private String trackMime(File f, String prefix) {
+        MediaExtractor ex = new MediaExtractor();
+        try {
+            ex.setDataSource(f.getAbsolutePath());
+            int t = selectTrack(ex, prefix);
+            return t < 0 ? null : ex.getTrackFormat(t).getString(MediaFormat.KEY_MIME);
+        } catch (Exception e) {
+            return null;
         } finally {
             ex.release();
         }
