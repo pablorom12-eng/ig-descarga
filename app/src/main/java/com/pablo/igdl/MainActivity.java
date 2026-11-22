@@ -180,7 +180,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(8), dp(8), dp(8), dp(8));
 
         urlBox = new EditText(this);
-        urlBox.setHint("Pega el enlace de Instagram");
+        urlBox.setHint("Pega un enlace de Instagram o YouTube");
         urlBox.setHintTextColor(0xFF888888);
         urlBox.setTextColor(TEXT);
         urlBox.setSingleLine(true);
@@ -257,7 +257,7 @@ public class MainActivity extends Activity {
         status = new TextView(this);
         status.setTextColor(0xFFBBBBBB);
         status.setTextSize(13);
-        status.setText("Abre un reel o foto. Si es vídeo, dale al play.");
+        status.setText("Pega un enlace de Instagram o YouTube. Si es vídeo, dale al play.");
         status.setPadding(dp(4), dp(4), dp(4), 0);
         root.addView(status);
 
@@ -382,7 +382,8 @@ public class MainActivity extends Activity {
                 if (autoMode && !fallbackScheduled) {
                     fallbackScheduled = true;
                     h.postDelayed(() -> {
-                        if (!autoStarted) {
+                        String cu = web.getUrl();
+                        if (!autoStarted && cu != null && cu.contains("instagram.com")) {
                             autoStarted = true;
                             downloadPhotos(true);
                         }
@@ -419,6 +420,10 @@ public class MainActivity extends Activity {
         String host = u.getHost();
         String path = u.getPath();
         if (host == null || path == null) return;
+        if (host.endsWith("googlevideo.com")) {
+            considerYoutube(u);
+            return;
+        }
         if (!(host.contains("cdninstagram.com") || host.contains("fbcdn.net"))) return;
         if (!path.contains(".mp4")) return;
 
@@ -433,6 +438,86 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> onMediaDetected(!audio));
     }
 
+    /** Vídeo/audio mp4 de YouTube (googlevideo). Se guarda sin el rango pedido. */
+    private void considerYoutube(Uri u) {
+        String path = u.getPath();
+        if (path == null || !path.contains("videoplayback")) return;
+        String mime = u.getQueryParameter("mime");
+        String clen = u.getQueryParameter("clen");
+        String itag = u.getQueryParameter("itag");
+        if (mime == null || clen == null || itag == null) return;
+        if (!(mime.equals("video/mp4") || mime.equals("audio/mp4"))) return;
+
+        Uri.Builder b = u.buildUpon().clearQuery();
+        for (String k : u.getQueryParameterNames()) {
+            if (k.equals("range") || k.equals("rn") || k.equals("rbuf")) continue;
+            for (String val : u.getQueryParameters(k)) b.appendQueryParameter(k, val);
+        }
+        final String full = b.build().toString();
+        synchronized (cands) {
+            for (int i = cands.size() - 1; i >= 0; i--) {
+                Uri e = Uri.parse(cands.get(i));
+                if (e.getHost() != null && e.getHost().endsWith("googlevideo.com")
+                        && itag.equals(e.getQueryParameter("itag"))) {
+                    cands.remove(i);
+                }
+            }
+            cands.add(full);
+            if (cands.size() > 10) cands.remove(0);
+        }
+        final boolean video = mime.equals("video/mp4");
+        runOnUiThread(() -> onMediaDetected(video));
+    }
+
+    private boolean hasYoutube(List<String> list) {
+        for (String c : list) if (c.contains("googlevideo.com")) return true;
+        return false;
+    }
+
+    /** De YouTube solo hace falta el mejor vídeo y el mejor audio (por tamaño). */
+    private List<String> pickBest(List<String> list) {
+        if (!hasYoutube(list)) return list;
+        String bestV = null;
+        String bestA = null;
+        long lv = -1;
+        long la = -1;
+        List<String> out = new ArrayList<>();
+        for (String c : list) {
+            Uri u = Uri.parse(c);
+            if (u.getHost() == null || !u.getHost().endsWith("googlevideo.com")) {
+                out.add(c);
+                continue;
+            }
+            long len;
+            try {
+                len = Long.parseLong(u.getQueryParameter("clen"));
+            } catch (Exception e) {
+                continue;
+            }
+            if ("audio/mp4".equals(u.getQueryParameter("mime"))) {
+                if (len > la) {
+                    la = len;
+                    bestA = c;
+                }
+            } else if (len > lv) {
+                lv = len;
+                bestV = c;
+            }
+        }
+        if (bestV != null) out.add(bestV);
+        if (bestA != null) out.add(bestA);
+        return out;
+    }
+
+    private String safeName(String title) {
+        if (title == null) return null;
+        String t = title.replaceAll("(?i)\\s*-\\s*YouTube\\s*$", "")
+                .replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", " ")
+                .replaceAll("\\s+", " ").trim();
+        if (t.length() > 80) t = t.substring(0, 80).trim();
+        return t.isEmpty() ? null : t;
+    }
+
     private void onMediaDetected(boolean video) {
         if (!video) return;
         showFab("⬇  Descargar vídeo", this::downloadVideo);
@@ -440,7 +525,11 @@ public class MainActivity extends Activity {
         if (autoMode && !autoStarted) {
             autoStarted = true;
             setStatus("Descargando automáticamente…");
-            h.postDelayed(this::downloadVideo, 2500);
+            final boolean yt;
+            synchronized (cands) {
+                yt = hasYoutube(new ArrayList<>(cands));
+            }
+            h.postDelayed(this::downloadVideo, yt ? 9000 : 2500);
         }
     }
 
@@ -467,6 +556,10 @@ public class MainActivity extends Activity {
         String url = urlBox.getText().toString().trim();
         if (url.isEmpty()) return;
         if (!url.startsWith("http")) url = "https://" + url;
+        Matcher ym = Pattern.compile(
+                "(?:youtu\\.be/|youtube\\.com/(?:watch\\?(?:.*&)?v=|shorts/|live/|embed/))([A-Za-z0-9_-]{11})")
+                .matcher(url);
+        if (ym.find()) url = "https://m.youtube.com/watch?v=" + ym.group(1);
         autoMode = auto;
         autoStarted = false;
         fallbackScheduled = false;
@@ -484,9 +577,11 @@ public class MainActivity extends Activity {
     private void downloadVideo() {
         final List<String> list;
         synchronized (cands) {
-            list = new ArrayList<>(cands);
+            list = pickBest(new ArrayList<>(cands));
         }
         final String pageUrl = web.getUrl();
+        final boolean yt = hasYoutube(list);
+        final String ytTitle = yt ? safeName(web.getTitle()) : null;
         if (list.isEmpty()) {
             setStatus("A\u00FAn no hay v\u00EDdeo detectado. Dale al play.");
             return;
@@ -564,7 +659,9 @@ public class MainActivity extends Activity {
                     note += " [archivos: " + list.size() + ", con audio: "
                             + (aOnly != null ? "s\u00ED" : "no") + "]";
                 }
-                String name = "ig_" + System.currentTimeMillis() + ".mp4";
+                String name = yt
+                        ? (ytTitle != null ? ytTitle : "yt") + " " + (System.currentTimeMillis() % 100000) + ".mp4"
+                        : "ig_" + System.currentTimeMillis() + ".mp4";
                 Uri uri = saveToGallery(best, name, "video/mp4", true);
                 addHistory(uri, name, "video/mp4", true);
                 msg = "Guardado en Pel\u00EDculas/Instagram" + (sound ? "" : " (sin audio)") + note;
@@ -687,20 +784,55 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ red, ficheros, mux
 
-    private void fetch(String url, File dest) throws IOException {
+    private HttpURLConnection open(String url) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(15000);
         c.setReadTimeout(30000);
         c.setRequestProperty("User-Agent", UA);
-        c.setRequestProperty("Referer", "https://www.instagram.com/");
+        boolean yt = url.contains("googlevideo.com");
+        c.setRequestProperty("Referer", yt ? "https://www.youtube.com/" : "https://www.instagram.com/");
+        if (yt) c.setRequestProperty("Origin", "https://www.youtube.com");
         String cookie = CookieManager.getInstance().getCookie(url);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
+        return c;
+    }
+
+    private void fetch(String url, File dest) throws IOException {
+        Uri u = Uri.parse(url);
+        String clen = u.getQueryParameter("clen");
+        if (u.getHost() != null && u.getHost().endsWith("googlevideo.com") && clen != null) {
+            fetchChunked(url, Long.parseLong(clen), dest);
+            return;
+        }
+        HttpURLConnection c = open(url);
         int code = c.getResponseCode();
         if (code >= 400) throw new IOException("HTTP " + code);
         try (InputStream is = c.getInputStream(); OutputStream os = new FileOutputStream(dest)) {
             copy(is, os);
         } finally {
             c.disconnect();
+        }
+    }
+
+    /** YouTube limita las descargas largas: se pide el fichero a trozos de 8 MB. */
+    private void fetchChunked(String url, long total, File dest) throws IOException {
+        final long chunk = 8L * 1024 * 1024;
+        try (OutputStream os = new FileOutputStream(dest)) {
+            long pos = 0;
+            while (pos < total) {
+                long end = Math.min(pos + chunk, total) - 1;
+                HttpURLConnection c = open(url + "&range=" + pos + "-" + end);
+                try {
+                    int code = c.getResponseCode();
+                    if (code >= 400) throw new IOException("HTTP " + code);
+                    try (InputStream is = c.getInputStream()) {
+                        copy(is, os);
+                    }
+                } finally {
+                    c.disconnect();
+                }
+                pos = end + 1;
+            }
         }
     }
 

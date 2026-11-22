@@ -23,7 +23,7 @@
     }
   }
   var reCont = /^(continuar en el sitio web|continue on web|continue to web|continuar en la web)/i;
-  var reCookie = /^(rechazar cookies opcionales|decline optional cookies)/i;
+  var reCookie = /^(rechazar cookies opcionales|decline optional cookies|rechazar todo|reject all)/i;
   var clicked = false;
   var cookieClicked = false;
   function extras() {
@@ -39,6 +39,12 @@
       for (var k = 0; k < bs.length; k++) {
         var tt = (bs[k].innerText || '').trim();
         if (tt.length < 40 && reCookie.test(tt)) { cookieClicked = true; bs[k].click(); break; }
+      }
+    }
+    if (location.hostname.indexOf('youtube.com') >= 0) {
+      var pl = document.getElementById('movie_player');
+      if (pl && pl.setPlaybackQualityRange) {
+        try { pl.setPlaybackQualityRange('hd1080'); } catch (e) {}
       }
     }
     var vs = document.querySelectorAll('video');
