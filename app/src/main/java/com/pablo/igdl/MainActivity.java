@@ -512,8 +512,9 @@ public class MainActivity extends Activity {
                         File mf = new File(getCacheDir(), "m.mp4");
                         mux(vOnly, aOnly, mf);
                         best = mf;
-                    } catch (Exception e) {
-                        note = " (no se pudo unir el audio)";
+                    } catch (Throwable e) {
+                        note = " (no se pudo unir: " + e.getClass().getSimpleName()
+                                + ": " + e.getMessage() + ")";
                     }
                 }
                 if (best == null) {
@@ -769,13 +770,49 @@ public class MainActivity extends Activity {
             int outV = muxer.addTrack(ve.getTrackFormat(vt));
             int outA = muxer.addTrack(ae.getTrackFormat(at));
             muxer.start();
-            copySamples(ve, muxer, outV);
-            copySamples(ae, muxer, outA);
+            interleave(ve, outV, ae, outA, muxer);
             muxer.stop();
         } finally {
             ve.release();
             ae.release();
             muxer.release();
+        }
+    }
+
+    private void interleave(MediaExtractor ve, int outV, MediaExtractor ae, int outA,
+                            MediaMuxer muxer) {
+        ByteBuffer buf = ByteBuffer.allocate(2 * 1024 * 1024);
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        boolean vDone = false;
+        boolean aDone = false;
+        while (!vDone || !aDone) {
+            long vt = vDone ? Long.MAX_VALUE : ve.getSampleTime();
+            long at = aDone ? Long.MAX_VALUE : ae.getSampleTime();
+            if (vt < 0) {
+                vDone = true;
+                continue;
+            }
+            if (at < 0) {
+                aDone = true;
+                continue;
+            }
+            boolean useV = !vDone && (aDone || vt <= at);
+            MediaExtractor ex = useV ? ve : ae;
+            int track = useV ? outV : outA;
+            buf.clear();
+            int size = ex.readSampleData(buf, 0);
+            if (size < 0) {
+                if (useV) vDone = true;
+                else aDone = true;
+                continue;
+            }
+            info.offset = 0;
+            info.size = size;
+            info.presentationTimeUs = ex.getSampleTime();
+            info.flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                    ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+            muxer.writeSampleData(track, buf, info);
+            ex.advance();
         }
     }
 
