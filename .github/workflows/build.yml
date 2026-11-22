@@ -18,7 +18,13 @@ jobs:
         with:
           gradle-version: 8.10.2
       - name: Compilar APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+      - name: Mostrar errores
+        if: failure()
+        run: |
+          grep -E "error:|What went wrong|AAPT|Execution failed|\.java:[0-9]+" -A2 build.log | head -9 | sed 's/^/::error::/'
       - uses: actions/upload-artifact@v4
         with:
           name: IG-Descarga-APK
