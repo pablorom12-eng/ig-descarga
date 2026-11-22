@@ -131,6 +131,19 @@ public class MainActivity extends Activity {
 
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                String u = request.getUrl().toString();
+                if (u.startsWith("http://") || u.startsWith("https://")) return false;
+                // Enlaces tipo instagram://reels_share/?shortcode=XXXX -> volver a la web
+                String code = request.getUrl().getQueryParameter("shortcode");
+                String cur = view.getUrl();
+                if (code != null && (cur == null || !cur.contains(code))) {
+                    view.loadUrl("https://www.instagram.com/reel/" + code + "/");
+                }
+                return true; // nunca intentar abrir esquemas desconocidos
+            }
+
+            @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 consider(request.getUrl().toString());
                 return null;
