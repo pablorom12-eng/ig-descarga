@@ -22,6 +22,22 @@
       }
     }
   }
-  setInterval(clean, 1500);
+  var reCont = /^(continuar en el sitio web|continue on web|continue to web|continuar en la web)/i;
+  var clicked = false;
+  function extras() {
+    if (!clicked) {
+      var cs = document.querySelectorAll('a,button,div[role="button"],span');
+      for (var i = 0; i < cs.length; i++) {
+        var t = (cs[i].innerText || '').trim();
+        if (t.length < 40 && reCont.test(t)) { clicked = true; cs[i].click(); break; }
+      }
+    }
+    var vs = document.querySelectorAll('video');
+    for (var j = 0; j < vs.length; j++) {
+      if (vs[j].muted) { vs[j].muted = false; vs[j].volume = 0.05; }
+    }
+  }
+  setInterval(function () { clean(); extras(); }, 1500);
   clean();
+  extras();
 })();

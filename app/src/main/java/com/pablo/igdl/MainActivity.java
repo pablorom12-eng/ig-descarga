@@ -90,8 +90,7 @@ public class MainActivity extends Activity {
     private TextView emptyView;
     private ListView histList;
 
-    private volatile String videoUrl;
-    private volatile String audioUrl;
+    private final List<String> cands = new ArrayList<>();
     private boolean autoMode;
     private boolean autoStarted;
     private boolean fallbackScheduled;
@@ -411,8 +410,12 @@ public class MainActivity extends Activity {
 
         final String full = url.replaceAll("&bytestart=\\d+", "").replaceAll("&byteend=\\d+", "");
         final boolean audio = isAudioUrl(u);
-        if (audio) audioUrl = full;
-        else videoUrl = full;
+        synchronized (cands) {
+            if (!cands.contains(full)) {
+                cands.add(full);
+                if (cands.size() > 6) cands.remove(0);
+            }
+        }
         runOnUiThread(() -> onMediaDetected(!audio));
     }
 
@@ -453,8 +456,9 @@ public class MainActivity extends Activity {
         autoMode = auto;
         autoStarted = false;
         fallbackScheduled = false;
-        videoUrl = null;
-        audioUrl = null;
+        synchronized (cands) {
+            cands.clear();
+        }
         hideFab();
         showHistory(false);
         setStatus(auto ? "Abriendo y descargando…" : "Cargando… si es vídeo, dale al play.");
@@ -464,42 +468,71 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ descarga de vídeo
 
     private void downloadVideo() {
-        final String v = videoUrl;
-        final String a = audioUrl;
-        if (v == null) {
-            setStatus("Aún no hay vídeo detectado. Dale al play.");
+        final List<String> list;
+        synchronized (cands) {
+            list = new ArrayList<>(cands);
+        }
+        final String pageUrl = web.getUrl();
+        if (list.isEmpty()) {
+            setStatus("A\u00FAn no hay v\u00EDdeo detectado. Dale al play.");
             return;
         }
         if (busy) return;
         busy = true;
-        setStatus("Descargando vídeo…");
+        setStatus("Descargando v\u00EDdeo\u2026");
         exec.execute(() -> {
             String msg;
             boolean ok = false;
             try {
-                File vf = new File(getCacheDir(), "v.mp4");
-                fetch(v, vf);
-                File out = vf;
-                String note = "";
-                if (!hasAudio(vf) && a != null) {
-                    ui("Descargando audio…");
+                File best = null;
+                File vOnly = null;
+                File aOnly = null;
+                int n = 0;
+                for (String u : list) {
+                    File f = new File(getCacheDir(), "c" + (n++) + ".mp4");
                     try {
-                        File af = new File(getCacheDir(), "a.mp4");
-                        fetch(a, af);
-                        File mf = new File(getCacheDir(), "m.mp4");
-                        ui("Uniendo vídeo y audio…");
-                        mux(vf, af, mf);
-                        out = mf;
+                        fetch(u, f);
                     } catch (Exception e) {
-                        out = vf;
+                        continue;
+                    }
+                    boolean a = hasAudio(f);
+                    boolean v = hasVideo(f);
+                    if (a && v) {
+                        if (best == null || f.length() > best.length()) best = f;
+                    } else if (v) {
+                        if (vOnly == null || f.length() > vOnly.length()) vOnly = f;
+                    } else if (a) {
+                        if (aOnly == null || f.length() > aOnly.length()) aOnly = f;
+                    }
+                }
+                String note = "";
+                if (best == null && vOnly != null && aOnly != null) {
+                    try {
+                        ui("Uniendo v\u00EDdeo y audio\u2026");
+                        File mf = new File(getCacheDir(), "m.mp4");
+                        mux(vOnly, aOnly, mf);
+                        best = mf;
+                    } catch (Exception e) {
                         note = " (no se pudo unir el audio)";
                     }
                 }
-                boolean sound = hasAudio(out);
+                if (best == null) {
+                    ui("Probando otro m\u00E9todo\u2026");
+                    File emb = tryEmbed(pageUrl);
+                    if (emb != null && hasAudio(emb)) best = emb;
+                }
+                if (best == null) best = vOnly;
+                if (best == null) throw new IOException("no se pudo bajar el v\u00EDdeo");
+
+                boolean sound = hasAudio(best);
+                if (!sound) {
+                    note += " [archivos: " + list.size() + ", con audio: "
+                            + (aOnly != null ? "s\u00ED" : "no") + "]";
+                }
                 String name = "ig_" + System.currentTimeMillis() + ".mp4";
-                Uri uri = saveToGallery(out, name, "video/mp4", true);
+                Uri uri = saveToGallery(best, name, "video/mp4", true);
                 addHistory(uri, name, "video/mp4", true);
-                msg = "Guardado en Películas/Instagram" + (sound ? "" : " (sin audio)") + note;
+                msg = "Guardado en Pel\u00EDculas/Instagram" + (sound ? "" : " (sin audio)") + note;
                 ok = true;
             } catch (Exception e) {
                 msg = "Error: " + e.getMessage();
@@ -510,9 +543,47 @@ public class MainActivity extends Activity {
                 busy = false;
                 setStatus(fmsg);
                 Toast.makeText(this, fmsg, Toast.LENGTH_LONG).show();
-                if (!fok) showFab("↻  Reintentar", this::downloadVideo);
+                if (!fok) showFab("\u21BB  Reintentar", this::downloadVideo);
             });
         });
+    }
+
+    /** Plan B: la p\u00E1gina embed suele traer el mp4 completo (con audio). */
+    private File tryEmbed(String pageUrl) {
+        try {
+            if (pageUrl == null) return null;
+            Matcher m = Pattern.compile(
+                    "instagram\\.com/(?:[^/]+/)?(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)").matcher(pageUrl);
+            if (!m.find()) return null;
+            String html = fetchText("https://www.instagram.com/p/" + m.group(1) + "/embed/captioned/");
+            html = html.replace("\\\"", "\"")
+                    .replace("\\\\/", "/")
+                    .replace("\\/", "/")
+                    .replace("\\u0026", "&");
+            Matcher v = Pattern.compile("\"video_url\":\"([^\"]+)\"").matcher(html);
+            if (!v.find()) return null;
+            File f = new File(getCacheDir(), "embed.mp4");
+            fetch(v.group(1), f);
+            return f;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String fetchText(String url) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(30000);
+        c.setRequestProperty("User-Agent", UA);
+        String cookie = CookieManager.getInstance().getCookie(url);
+        if (cookie != null) c.setRequestProperty("Cookie", cookie);
+        if (c.getResponseCode() >= 400) throw new IOException("HTTP " + c.getResponseCode());
+        try (InputStream is = c.getInputStream(); ByteArrayOutputStream bo = new ByteArrayOutputStream()) {
+            copy(is, bo);
+            return bo.toString("UTF-8");
+        } finally {
+            c.disconnect();
+        }
     }
 
     // ------------------------------------------------------------------ descarga de fotos
@@ -642,6 +713,18 @@ public class MainActivity extends Activity {
         try {
             ex.setDataSource(f.getAbsolutePath());
             return selectTrack(ex, "audio/") >= 0;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            ex.release();
+        }
+    }
+
+    private boolean hasVideo(File f) {
+        MediaExtractor ex = new MediaExtractor();
+        try {
+            ex.setDataSource(f.getAbsolutePath());
+            return selectTrack(ex, "video/") >= 0;
         } catch (Exception e) {
             return false;
         } finally {
